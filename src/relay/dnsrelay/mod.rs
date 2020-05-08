@@ -135,58 +135,47 @@ async fn acl_lookup(
     let addr = Address::DomainNameAddress(name, 0);
     let qname_in_proxy_list = context.check_qname_in_proxy_list(&addr);
 
-    let remote_response_fut = async {
-        match qname_in_proxy_list {
-            Some(false) => None,
-            _ => {
-                let timeout = Some(Duration::new(3, 0));
-                try_timeout(proxy_lookup(context.clone(), svr_cfg, remote, qname, qtype), timeout)
-                    .await
-                    .ok()
-            }
-        }
+    let remote_response_fut = {
+        let timeout = Some(Duration::new(3, 0));
+        try_timeout(proxy_lookup(context.clone(), svr_cfg, remote, qname, qtype), timeout)
     };
 
-    let local_response = match qname_in_proxy_list {
-        Some(true) => None,
-        _ => {
-            let timeout = Some(Duration::new(3, 0));
-            try_timeout(local_lookup(qname, qtype, local), timeout).await.ok()
-        }
-    }
-    .unwrap_or_else(Message::new);
+    let local_response_fut = {
+        let timeout = Some(Duration::new(3, 0));
+        try_timeout(local_lookup(qname, qtype, local), timeout)
+    };
 
     match qname_in_proxy_list {
         Some(true) => {
-            let remote_response = remote_response_fut.await.unwrap_or_else(Message::new);
+            let remote_response = remote_response_fut.await.unwrap_or_else(|_| Message::new());
             debug!("pick remote response (qname): {:?}", remote_response);
             return Ok((remote_response, true));
         }
         Some(false) => {
+            let local_response = local_response_fut.await.unwrap_or_else(|_| Message::new());
             debug!("pick local response (qname): {:?}", local_response);
             return Ok((local_response, false));
         }
         None => (),
     }
 
-    if local_response.answer_count() == 0 {
-        let remote_response = remote_response_fut.await.unwrap_or_else(Message::new);
-        return Ok((remote_response, true));
-    }
+    let local_response = local_response_fut.await.unwrap_or_else(|_| Message::new());
 
-    for rec in local_response.answers() {
-        let forward = match rec.rdata() {
-            RData::A(ref ip) => context.check_ip_in_proxy_list(&IpAddr::from(*ip)),
-            RData::AAAA(ref ip) => context.check_ip_in_proxy_list(&IpAddr::from(*ip)),
-            _ => true,
-        };
-        if !forward {
-            debug!("pick local response (ip): {:?}", local_response);
-            return Ok((local_response, false));
+    if local_response.answer_count() != 0 {
+        for rec in local_response.answers() {
+            let forward = match rec.rdata() {
+                RData::A(ref ip) => context.check_ip_in_proxy_list(&IpAddr::from(*ip)),
+                RData::AAAA(ref ip) => context.check_ip_in_proxy_list(&IpAddr::from(*ip)),
+                _ => true,
+            };
+            if !forward {
+                debug!("pick local response (ip): {:?}", local_response);
+                return Ok((local_response, false));
+            }
         }
     }
 
-    let remote_response = remote_response_fut.await.unwrap_or_else(Message::new);
+    let remote_response = remote_response_fut.await.unwrap_or_else(|_| Message::new());
     debug!("pick remote response (ip): {:?}", remote_response);
     Ok((remote_response, true))
 }
