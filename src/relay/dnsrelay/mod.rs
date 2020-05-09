@@ -12,10 +12,11 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 #[cfg(not(target_os = "android"))]
 use tokio::net::UdpSocket;
 
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use trust_dns_proto::{
     op::{header::MessageType, response_code::ResponseCode, Message, Query},
     rr::RData,
+    rr::RecordType,
 };
 
 use crate::{
@@ -66,15 +67,13 @@ async fn acl_lookup<Local, Remote>(
     // FIXME: spawn(remote_response_fut)
     let local_response = local_response_fut.await.unwrap_or_else(|_| Message::new());
     for rec in local_response.answers() {
-        if rec.record_type() != query.query_type() {
-            warn!("local DNS response has inconsistent answer type {} for query {}", rec.record_type(), query);
-            break
+        if rec.record_type() != RecordType::A && rec.record_type() != RecordType::AAAA {
+            continue
         }
         let forward = match rec.rdata() {
             RData::A(ref ip) => context.check_ip_in_proxy_list(&IpAddr::from(*ip)),
             RData::AAAA(ref ip) => context.check_ip_in_proxy_list(&IpAddr::from(*ip)),
-            RData::PTR(_) => panic!("PTR records should not reach here"),
-            _ => context.is_default_in_proxy_list(),
+            _ => panic!("None A/AAAA records should not reach here"),
         };
         if !forward {
             debug!("pick local response (response): {:?}", local_response);
